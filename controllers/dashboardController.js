@@ -1,24 +1,67 @@
 const { Customer, Product, Invoice, User } = require('../models');
 const { Op } = require('sequelize');
+const { sequelize } = require('../config/database');
 
 exports.getDashboardData = async (req, res) => {
     try {
-        // Get counts
-        const totalCustomers = await Customer.count();
-        const totalProducts = await Product.count();
-        const totalInvoices = await Invoice.count();
-        const activeUsers = await User.count({ where: { role: { [Op.ne]: 'pending' } } });
+        // Run all independent queries in parallel instead of one-by-one
+        const [
+            totalCustomers,
+            totalProducts,
+            totalInvoices,
+            activeUsers,
+            invoiceDraft,
+            invoiceConfirmed,
+            invoiceRejected,
+            revenueResult,
+            pendingResult,
+            recentInvoices,
+            draftInvoices,
+            unpaidInvoices,
+            topProducts,
+            pendingUsers
+        ] = await Promise.all([
+            Customer.count(),
+            Product.count(),
+            Invoice.count(),
+            User.count({ where: { is_active_user: true } }),
+            Invoice.count({ where: { status: 'draft' } }),
+            Invoice.count({ where: { status: 'confirmed' } }),
+            Invoice.count({ where: { status: 'rejected' } }),
+            // Use SUM in SQL instead of fetching all rows and reducing in JS
+            Invoice.findOne({
+                where: { status: 'confirmed' },
+                attributes: [[sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('grand_total')), 0), 'total']],
+                raw: true
+            }),
+            Invoice.findOne({
+                where: { status: 'draft' },
+                attributes: [[sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('grand_total')), 0), 'total']],
+                raw: true
+            }),
+            Invoice.findAll({
+                order: [['createdAt', 'DESC']],
+                limit: 8,
+                include: [{ model: Customer }]
+            }),
+            Invoice.findAll({
+                where: { status: 'draft' },
+                order: [['createdAt', 'DESC']],
+                limit: 5,
+                include: [{ model: Customer }]
+            }),
+            Invoice.findAll({
+                where: { status: 'confirmed' },
+                order: [['createdAt', 'ASC']],
+                limit: 5,
+                include: [{ model: Customer }]
+            }),
+            Product.findAll({ limit: 5 }),
+            User.findAll({ where: { is_active_user: false } })
+        ]);
 
-        const invoiceDraft = await Invoice.count({ where: { status: 'draft' } });
-        const invoiceSent = await Invoice.count({ where: { status: 'sent' } });
-        const invoicePaid = await Invoice.count({ where: { status: 'paid' } });
-        const invoiceCancelled = await Invoice.count({ where: { status: 'cancelled' } });
-
-        const paidInvoices = await Invoice.findAll({ where: { status: 'paid' } });
-        const sentInvoices = await Invoice.findAll({ where: { status: 'sent' } });
-
-        const totalRevenue = paidInvoices.reduce((sum, inv) => sum + parseFloat(inv.grand_total || 0), 0);
-        const pendingAmount = sentInvoices.reduce((sum, inv) => sum + parseFloat(inv.grand_total || 0), 0);
+        const totalRevenue = parseFloat(revenueResult?.total || 0);
+        const pendingAmount = parseFloat(pendingResult?.total || 0);
 
         const stats = {
             total_revenue: totalRevenue,
@@ -26,42 +69,13 @@ exports.getDashboardData = async (req, res) => {
             total_customers: totalCustomers,
             active_users: activeUsers,
             invoice_draft: invoiceDraft,
-            invoice_sent: invoiceSent,
-            invoice_paid: invoicePaid,
-            invoice_cancelled: invoiceCancelled,
+            invoice_sent: invoiceConfirmed,
+            invoice_paid: 0,
+            invoice_cancelled: invoiceRejected,
             pending_amount: pendingAmount,
-            total_unpaid_count: invoiceSent,
+            total_unpaid_count: invoiceConfirmed,
             my_drafts_count: invoiceDraft
         };
-
-        // Recent invoices (last 8)
-        const recentInvoices = await Invoice.findAll({
-            order: [['createdAt', 'DESC']],
-            limit: 8,
-            include: [{ model: Customer }]
-        });
-
-        // Draft invoices (last 5)
-        const draftInvoices = await Invoice.findAll({
-            where: { status: 'draft' },
-            order: [['createdAt', 'DESC']],
-            limit: 5,
-            include: [{ model: Customer }]
-        });
-
-        // Unpaid invoices
-        const unpaidInvoices = await Invoice.findAll({
-            where: { status: 'sent' },
-            order: [['createdAt', 'ASC']],
-            limit: 5,
-            include: [{ model: Customer }]
-        });
-
-        // Top products
-        const topProducts = await Product.findAll({ limit: 5 });
-
-        // Pending users
-        const pendingUsers = await User.findAll({ where: { role: 'pending' } });
 
         res.json({
             stats,
@@ -80,21 +94,24 @@ exports.getDashboardData = async (req, res) => {
 // GET /api/dashboard/stats
 exports.getStats = async (req, res) => {
     try {
-        const totalCustomers = await Customer.count();
-        const totalProducts = await Product.count();
-        const totalInvoices = await Invoice.count();
-        
-        const allInvoices = await Invoice.findAll({ where: { status: { [Op.ne]: 'cancelled' } } });
-        const totalRevenue = allInvoices.reduce((sum, inv) => sum + parseFloat(inv.grand_total || 0), 0);
-        
-        const totalPendingInvoices = await Invoice.count({ where: { status: 'draft' } });
+        const [totalCustomers, totalProducts, totalInvoices, totalPendingInvoices, revenueResult] = await Promise.all([
+            Customer.count(),
+            Product.count(),
+            Invoice.count(),
+            Invoice.count({ where: { status: 'draft' } }),
+            Invoice.findOne({
+                where: { status: { [Op.ne]: 'rejected' } },
+                attributes: [[sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('grand_total')), 0), 'total']],
+                raw: true
+            })
+        ]);
 
         res.json({
             totalCustomers,
             totalProducts,
             totalInvoices,
             totalPendingInvoices,
-            totalRevenue: parseFloat(totalRevenue.toFixed(2))
+            totalRevenue: parseFloat(parseFloat(revenueResult?.total || 0).toFixed(2))
         });
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -118,11 +135,9 @@ exports.getRecentInvoices = async (req, res) => {
 // GET /api/dashboard/pending-approvals
 exports.getPendingApprovals = async (req, res) => {
     try {
-        const snapshot = await db.collection('users').where('role', '==', 'pending').get();
-        const pendingUsers = snapshot.docs.map(d => {
-            const data = d.data();
-            delete data.password_hash;
-            return data;
+        const pendingUsers = await User.findAll({
+            where: { is_active_user: false },
+            attributes: { exclude: ['password_hash'] }
         });
         res.json(pendingUsers);
     } catch (error) {
@@ -133,11 +148,14 @@ exports.getPendingApprovals = async (req, res) => {
 // GET /api/dashboard/low-stock
 exports.getLowStockProducts = async (req, res) => {
     try {
-        const snapshot = await db.collection('products').get();
-        const products = snapshot.docs.map(d => d.data());
-        const lowStock = products
-            .filter(p => p.current_stock <= (p.min_stock_level || 0))
-            .slice(0, 10);
+        const lowStock = await Product.findAll({
+            where: sequelize.where(
+                sequelize.col('current_stock'),
+                Op.lte,
+                sequelize.col('min_stock_level')
+            ),
+            limit: 10
+        });
         res.json(lowStock);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
