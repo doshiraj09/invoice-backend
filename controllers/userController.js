@@ -142,14 +142,11 @@ exports.activateUser = async (req, res) => {
 // PATCH /api/users/:id/deactivate (admin only)
 exports.deactivateUser = async (req, res) => {
     try {
-        const docRef = db.collection('users').doc(String(req.params.id));
-        const doc = await docRef.get();
-        if (!doc.exists) return res.status(404).json({ message: 'User not found' });
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
 
-        await docRef.update({ is_active_user: false, updated_at: new Date() });
-        
-        const updated = await docRef.get();
-        res.json(userToJSON(updated.data()));
+        await user.update({ is_active_user: false });
+        res.json(userToJSON(user));
     } catch (error) {
         res.status(400).json({ message: 'Error deactivating user', error: error.message });
     }
@@ -158,11 +155,10 @@ exports.deactivateUser = async (req, res) => {
 // DELETE /api/users/:id (admin only)
 exports.deleteUser = async (req, res) => {
     try {
-        const docRef = db.collection('users').doc(String(req.params.id));
-        const doc = await docRef.get();
-        if (!doc.exists) return res.status(404).json({ message: 'User not found' });
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
 
-        await docRef.delete();
+        await user.destroy();
         res.json({ message: 'User deleted successfully' });
     } catch (error) {
         res.status(400).json({ message: 'Error deleting user', error: error.message });
