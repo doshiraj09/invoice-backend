@@ -40,19 +40,19 @@ exports.getDashboardData = async (req, res) => {
                 raw: true
             }),
             Invoice.findAll({
-                order: [['createdAt', 'DESC']],
+                order: [['created_at', 'DESC']],
                 limit: 8,
                 include: [{ model: Customer }]
             }),
             Invoice.findAll({
                 where: { status: 'draft' },
-                order: [['createdAt', 'DESC']],
+                order: [['created_at', 'DESC']],
                 limit: 5,
                 include: [{ model: Customer }]
             }),
             Invoice.findAll({
                 where: { status: 'confirmed' },
-                order: [['createdAt', 'ASC']],
+                order: [['created_at', 'ASC']],
                 limit: 5,
                 include: [{ model: Customer }]
             }),
